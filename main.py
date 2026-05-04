@@ -11,7 +11,6 @@ import random
 import os
 from datetime import datetime, timezone
 import hashlib
-import uuid # Adicionado para gerar nomes de arquivos únicos
 
 TOKEN   = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '-1003780528406')
@@ -41,6 +40,7 @@ sinal_lock              = threading.Lock()
 # ═══════════════════════════════════════════════════════════
 # CONSELHOS E RECOMENDAÇÕES PROFISSIONAIS
 # ═══════════════════════════════════════════════════════════
+
 CONSELHOS = [
     '💡 <i><b>Paciência Profissional:</b> O mercado premia os que aguardam a confluência PERFEITA.</i>',
     '🎯 <i><b>Stop Loss:</b> Não é fraqueza - é a marca do TRADER PROFISSIONAL.</i>',
@@ -69,6 +69,7 @@ ALERTAS_RISCO = [
 ]
 
 def gerar_hash_sinal(direction, price_usd, adx, rsi):
+    """Gera hash único para identificar sinais idênticos"""
     sinal_str = f"{direction}_{price_usd:.2f}_{adx:.0f}_{rsi:.0f}"
     return hashlib.md5(sinal_str.encode()).hexdigest()
 
@@ -178,9 +179,7 @@ def generate_premium_chart(symbol=CCXT_SYMBOL, timeframe='1h', limit=120):
             mpf.make_addplot(df['Hist'],   type='bar', panel=3, color=colors_macd, alpha=0.6),
         ]
         
-        # CORREÇÃO: Usar um nome único para o gráfico para evitar conflito de threads
-        fname = f'elite_chart_{uuid.uuid4().hex[:8]}.png'
-        
+        fname = 'elite_chart_BTC.png'
         mpf.plot(df, type='candle', volume=True, style=s, addplot=apds,
                 title='📊 BITCOIN ELITE - ANÁLISE TÉCNICA PROFISSIONAL',
                 savefig=fname, figsize=(16, 11), panel_ratios=(4, 1, 1.5, 1.5), tight_layout=True)
@@ -189,7 +188,7 @@ def generate_premium_chart(symbol=CCXT_SYMBOL, timeframe='1h', limit=120):
         print(f'[ERRO] Gráfico: {str(e)}')
         return None
 
-def send_trade_signal(force=False, chat_id_target=CHAT_ID):
+def send_trade_signal(force=False):
     global ultimo_sinal_enviado, ultimo_hash_sinal, tempo_ultimo_sinal
     
     with sinal_lock:
@@ -200,7 +199,6 @@ def send_trade_signal(force=False, chat_id_target=CHAT_ID):
         
         if not tv_data or not prices or not direction:
             print('[INFO] Sem sinal direcional no momento.')
-            if force: bot.send_message(chat_id_target, '⚠️ Sem sinal forte direcional no momento.')
             return
         
         is_buy     = direction == 'BUY'
@@ -209,20 +207,26 @@ def send_trade_signal(force=False, chat_id_target=CHAT_ID):
         adx = tv_data['adx']
         rsi = tv_data['rsi']
         
+        # Gerar hash do sinal
         novo_hash = gerar_hash_sinal(direction, prices['USD'], adx, rsi)
         
+        # Verificar se é sinal duplicado
         if novo_hash == ultimo_hash_sinal and not force:
             print('[INFO] Sinal identico ao anterior - BLOQUEADO para evitar duplicata.')
             return
         
+        # Verificar intervalo mínimo entre sinais (10 minutos)
         if not force and (tempo_agora - tempo_ultimo_sinal) < INTERVALO_MINIMO_SINAL:
-            print('[INFO] Intervalo mínimo não atingido.')
+            minutos_restantes = (INTERVALO_MINIMO_SINAL - (tempo_agora - tempo_ultimo_sinal)) / 60
+            print(f'[INFO] Intervalo mínimo não atingido. Aguarde {minutos_restantes:.0f} minutos.')
             return
         
+        # Filtro ADX
         if adx < 20 and not force:
-            print(f'[INFO] ADX baixo ({adx:.1f}) - tendência fraca.')
+            print(f'[INFO] ADX baixo ({adx:.1f}) - tendência fraca. Descartado.')
             return
         
+        # Atualizar cache
         ultimo_sinal_enviado = trade_type
         ultimo_hash_sinal = novo_hash
         tempo_ultimo_sinal = tempo_agora
@@ -233,6 +237,14 @@ def send_trade_signal(force=False, chat_id_target=CHAT_ID):
         price_brl  = prices['BRL']
         atr        = tv_data['atr'] if tv_data['atr'] else (price_usd * 0.015)
         confluence = tv_data.get('confluence', False)
+        tf4h_rec   = tv_data.get('tf4h_rec', 'N/D')
+        buy_sig    = tv_data.get('buy_signals', 0)
+        sell_sig   = tv_data.get('sell_signals', 0)
+        mfi        = tv_data.get('mfi', 50)
+        stoch      = tv_data.get('stoch', 50)
+        
+        chart_emoji = '📈' if is_buy else '📉'
+        conf_badge  = '✅ CONFLUÊNCIA 1H+4H' if confluence else '⚠️ Sinal 1H'
         
         mult_sl, mult_tp1, mult_tp2 = 1.5, 1.5, 3.0
         
@@ -248,38 +260,76 @@ def send_trade_signal(force=False, chat_id_target=CHAT_ID):
         rr_tp1 = abs(tp1_usd - price_usd) / abs(sl_usd - price_usd) if abs(sl_usd - price_usd) > 0 else 0
         rr_tp2 = abs(tp2_usd - price_usd) / abs(sl_usd - price_usd) if abs(sl_usd - price_usd) > 0 else 0
         
+        adx_text = '🔥 Forte' if adx > 25 else '⚡ Moderado' if adx > 20 else '⚠️ Fraco'
+        rsi_text = '🔴 Sobrecomprado' if rsi > 70 else '🟢 Sobrevendido' if rsi < 30 else '🟡 Neutro'
+        mfi_text = '🔴 Alto' if mfi > 80 else '🟢 Baixo' if mfi < 20 else '🟡 Moderado'
+        stoch_text = '🔴 Alto' if stoch > 80 else '🟢 Baixo' if stoch < 20 else '🟡 Normal'
         now_str  = datetime.now(timezone.utc).strftime('%d/%m/%Y - %H:%M UTC')
+        
+        # Gerar gráfico ANTES de enviar mensagem
         chart_file = generate_premium_chart()
         
         msg = (
-            f'{"📈" if is_buy else "📉"} <b>⚡ OPORTUNIDADE IDENTIFICADA</b>\n'
-            + '<code>════════════════════════════</code>\n'
+            f'{chart_emoji} <b>⚡ OPORTUNIDADE IDENTIFICADA</b> {chart_emoji}\n'
+            + '<code>═══════════════════════════════════</code>\n'
             + f'⏰ <b>Horário:</b> <i>{now_str}</i>\n'
+            + f'📍 <b>Ativo:</b> Bitcoin (BTC/USDT) • Timeframe: 1H\n'
             + f'<b>🎯 Operação:</b> <code>{trade_type}</code>\n'
-            + '<code>════════════════════════════</code>\n'
-            + f'<b>💰 ENTRADA:</b> <code>${price_usd:,.2f}</code>\n'
-            + f'🎯 TP1: <code>${tp1_usd:,.2f}</code>\n'
-            + f'🎯 TP2: <code>${tp2_usd:,.2f}</code>\n'
-            + f'🛑 SL:  <code>${sl_usd:,.2f}</code>\n'
-            + '<code>════════════════════════════</code>\n'
-            + f'{random.choice(CONSELHOS)}'
+            + f'<b>📊 Status:</b> {conf_badge}\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + f'<b>📈 INDICADORES TÉCNICOS:</b>\n'
+            + f'  • ADX: {adx_text} ({adx:.1f}) - FORÇA DA TENDÊNCIA\n'
+            + f'  • RSI: {rsi_text} ({rsi:.1f})\n'
+            + f'  • MFI: {mfi_text} ({mfi:.1f}) - FLUXO DE DINHEIRO\n'
+            + f'  • Stochastic: {stoch_text} ({stoch:.1f})\n'
+            + f'  • Sinais 1H: {buy_sig}📈 / {sell_sig}📉\n'
+            + f'  • 4H Recomendação: <code>{tf4h_rec}</code>\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + '<b>💰 PREÇOS DE ENTRADA (SPOT):</b>\n'
+            + f'  USD:  <code>${price_usd:,.2f}</code>\n'
+            + f'  EUR:  <code>€{price_eur:,.2f}</code>\n'
+            + f'  USDC: <code>{price_usdc:,.2f}</code>\n'
+            + f'  BRL:  <code>R${price_brl:,.2f}</code>\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + '<b>🎯 NÍVEIS DE REALIZAÇÃO:</b>\n'
+            + f'  TP1 (R:R {rr_tp1:.1f}:1) 🎖️  ${tp1_usd:,.2f}\n'
+            + f'  TP2 (R:R {rr_tp2:.1f}:1) 👑  ${tp2_usd:,.2f}\n'
+            + '<b>🛑 STOP LOSS (PROTEÇÃO):</b>\n'
+            + f'  <code>${sl_usd:,.2f}</code>\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + f'<b>📊 VOLATILIDADE (ATR):</b> ${atr:,.2f}\n'
+            + f'<b>💡 Tipo de Sinal:</b> {"Confluência Forte ⭐" if confluence else "Tendência 1H"}\n'
+            + f'<b>⚠️ Risco Recomendado:</b> Máx 2% do capital total\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + '<b>📋 RECOMENDAÇÃO EXECUTIVA:</b>\n'
+            + f'  {random.choice(RECOMENDACOES)}\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + '<b>🚨 AVISO DE RISCO:</b>\n'
+            + f'  {random.choice(ALERTAS_RISCO)}\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + f'{random.choice(CONSELHOS)}\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + '📲 <i>Sinal gerado automaticamente • Use com responsabilidade</i>'
         )
         
         try:
             if chart_file and os.path.exists(chart_file):
                 with open(chart_file, 'rb') as photo:
-                    bot.send_photo(chat_id_target, photo, caption=msg)
-                print(f'✅ SINAL ENVIADO: {trade_type}')
+                    bot.send_photo(CHAT_ID, photo, caption=msg)
+                print(f'✅ SINAL ENVIADO COM GRÁFICO: {trade_type}')
             else:
-                bot.send_message(chat_id_target, msg)
+                bot.send_message(CHAT_ID, msg)
+                print(f'✅ SINAL ENVIADO (sem gráfico): {trade_type}')
         except Exception as e:
             print(f'[ERRO] Envio: {str(e)}')
+            # Resetar cache em caso de erro
             ultimo_hash_sinal = None
+            tempo_ultimo_sinal = 0
         finally:
             if chart_file and os.path.exists(chart_file):
-                os.remove(chart_file) # Arquivo limpo do servidor
+                os.remove(chart_file)
 
-def send_crypto_news(chat_id_target=CHAT_ID):
+def send_crypto_news():
     global ultimo_link_noticia
     try:
         feed = feedparser.parse('https://cointelegraph.com.br/rss')
@@ -289,37 +339,130 @@ def send_crypto_news(chat_id_target=CHAT_ID):
                 summary = getattr(entry, 'summary', '')[:300]
                 msg = (
                     '🌍 <b>NOTÍCIAS DO MERCADO CRIPTO</b>\n'
+                    + '<code>═══════════════════════════════════</code>\n'
                     + f'<b>📰 {entry.title}</b>\n\n'
                     + f'<i>{summary}…</i>\n\n'
-                    + f'<a href="{entry.link}">🔗 Ler matéria completa</a>'
+                    + f'<a href="{entry.link}">🔗 Ler matéria completa</a>\n'
+                    + '<code>═══════════════════════════════════</code>\n'
+                    + f'{random.choice(CONSELHOS)}'
                 )
-                bot.send_message(chat_id_target, msg, disable_web_page_preview=False)
+                bot.send_message(CHAT_ID, msg, disable_web_page_preview=False)
+                print('✅ NOTÍCIA ENVIADA')
                 break
     except Exception as e:
         print(f'[ERRO] Notícias: {str(e)}')
 
 @bot.message_handler(commands=['start', 'ajuda'])
 def cmd_start(msg):
-    bot.send_message(msg.chat.id, '<b>🤖 BOT ELITE PRO ONLINE</b>\nComandos: /análise, /notícias, /status')
+    help_text = (
+        '<b>🤖 BOT ELITE PRO - ANÁLISE TÉCNICA DE TRADING PROFISSIONAL</b>\n\n'
+        '<b>📋 COMANDOS DISPONÍVEIS:</b>\n'
+        '<code>═══════════════════════════════════</code>\n'
+        '<b>/análise</b> - Análise técnica profissional INSTANTÂNEA\n'
+        '<b>/notícias</b> - Últimas notícias relevantes do mercado cripto\n'
+        '<b>/status</b> - Status do sistema e cotações em tempo real\n'
+        '<b>/ajuda</b> - Exibe este menu\n'
+        '<code>═══════════════════════════════════</code>\n'
+        '<b>ℹ️ CARACTERÍSTICAS AVANÇADAS:</b>\n'
+        '✅ Análises automáticas a cada 30 minutos\n'
+        '✅ Sinais INSTANTÂNEOS quando oportunidade é detectada\n'
+        '✅ Multi-timeframe (1H + 4H) com confluência\n'
+        '✅ 7 Indicadores profissionais: ADX, RSI, MACD, ATR, MFI, Stochastic, EMA\n'
+        '✅ Gráficos técnicos avançados com 4 painéis\n'
+        '✅ Cotações em 4 moedas: USD, EUR, USDC, BRL\n'
+        '✅ Cálculos automáticos de TP e SL com ATR\n'
+        '✅ Taxa R:R otimizada (até 3:1 em TP2)\n'
+        '✅ PROTEÇÃO contra mensagens duplicadas\n'
+        '<code>═══════════════════════════════════</code>\n'
+        '⚠️ IMPORTANTE: Sinais são educacionais. Trade por sua conta e risco!\n'
+    )
+    bot.send_message(msg.chat.id, help_text)
 
 @bot.message_handler(commands=['análise', 'analise'])
 def cmd_btc(msg):
     bot.send_message(msg.chat.id, '⏳ <b>Analisando mercado profundamente...</b>\n⏱️ Aguarde…')
-    threading.Thread(target=send_trade_signal, kwargs={'force': True, 'chat_id_target': msg.chat.id}, daemon=True).start()
+    threading.Thread(target=send_trade_signal, kwargs={'force': True}, daemon=True).start()
 
 @bot.message_handler(commands=['notícias', 'noticias'])
 def cmd_news(msg):
     bot.send_message(msg.chat.id, '🔍 <b>Buscando últimas notícias...</b>')
-    threading.Thread(target=send_crypto_news, kwargs={'chat_id_target': msg.chat.id}, daemon=True).start()
+    threading.Thread(target=send_crypto_news, daemon=True).start()
 
 @bot.message_handler(commands=['status'])
 def cmd_status(msg):
     prices = get_multi_currency_prices('BTC')
-    if prices:
-        status = f"✅ Sistema Operante.\nCotação atual: ${prices['USD']:,.2f}"
+    tv     = get_tradingview_analysis()
+    now    = datetime.now(timezone.utc).strftime('%d/%m/%Y - %H:%M UTC')
+    if prices and tv:
+        status = (
+            '✅ <b>SISTEMA ONLINE - TODAS AS FUNÇÕES ATIVAS</b>\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + f'⏰ {now}\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + '<b>💰 COTAÇÃO BITCOIN (SPOT):</b>\n'
+            + f'  USD:  <code>${prices["USD"]:,.2f}</code>\n'
+            + f'  EUR:  <code>€{prices["EUR"]:,.2f}</code>\n'
+            + f'  USDC: <code>{prices["USDC"]:,.2f}</code>\n'
+            + f'  BRL:  <code>R${prices["BRL"]:,.2f}</code>\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + '<b>📊 INDICADORES TÉCNICOS (1H):</b>\n'
+            + f'  RSI:    <code>{tv["rsi"]:.1f}</code>\n'
+            + f'  ADX:    <code>{tv["adx"]:.1f}</code>\n'
+            + f'  MFI:    <code>{tv["mfi"]:.1f}</code>\n'
+            + f'  ATR:    <code>${tv["atr"]:.2f}</code>\n'
+            + f'  Recomendação: <code>{tv["rec"]}</code>\n'
+            + '<code>═══════════════════════════════════</code>\n'
+            + '🟢 <b>Status dos Componentes:</b>\n'
+            + '  ✅ API Telegram: Conectada\n'
+            + '  ✅ API Binance: Conectada\n'
+            + '  ✅ TradingView: Conectada\n'
+            + '  ✅ Análise Automática: ATIVA\n'
+            + '  ✅ Detecção de Sinais: ATIVA\n'
+            + '  ✅ Proteção Anti-Duplicata: ATIVA\n'
+            + '<code>═══════════════════════════════════</code>'
+        )
     else:
-        status = "❌ Erro ao buscar cotação."
+        status = '❌ <b>Erro ao conectar.</b> Tente novamente em alguns instantes.'
     bot.send_message(msg.chat.id, status)
+
+def send_startup_message():
+    now = datetime.now(timezone.utc).strftime('%d/%m/%Y - %H:%M UTC')
+    msg = (
+        '🟢 <b>SISTEMA ELITE PRO v5.0 - INICIALIZADO</b>\n'
+        + '<code>═══════════════════════════════════</code>\n'
+        + f'⏰ {now}\n'
+        + '<code>═══════════════════════════════════</code>\n'
+        + '<b>🔧 MÓDULOS ATIVADOS:</b>\n'
+        + '  ✅ Conexão Telegram (SSL seguro)\n'
+        + '  ✅ API Binance (Cotações em tempo real)\n'
+        + '  ✅ Motor TradingView (Análise Técnica)\n'
+        + '  ✅ Análise Multi-Timeframe 1H+4H\n'
+        + '  ✅ Detecção de Confluência\n'
+        + '  ✅ Cálculo de ATR e Volatilidade\n'
+        + '  ✅ 7 Indicadores Técnicos\n'
+        + '  ✅ Gerador de Gráficos Profissionais\n'
+        + '  ✅ Feed de Notícias RSS\n'
+        + '  ✅ PROTEÇÃO Anti-Duplicata INTELIGENTE\n'
+        + '<code>═══════════════════════════════════</code>\n'
+        + '<b>📊 CONFIGURAÇÃO OTIMIZADA:</b>\n'
+        + '  • Análises: a cada 30 minutos\n'
+        + '  • Notícias: a cada 2 horas\n'
+        + '  • Sinais: INSTANTÂNEOS (sem duplicatas)\n'
+        + '  • Intervalo mínimo entre sinais: 10 minutos\n'
+        + '  • Multi-timeframe: 1H + 4H com confluência\n'
+        + '  • Cotações em: USD, EUR, USDC, BRL\n'
+        + '<code>═══════════════════════════════════</code>\n'
+        + '<b>📱 COMANDOS DISPONÍVEIS:</b>\n'
+        + '  /análise /notícias /status /ajuda\n'
+        + '<code>═══════════════════════════════════</code>\n'
+        + f'{random.choice(CONSELHOS)}\n'
+        + '<code>═══════════════════════════════════</code>\n'
+        + '🚀 Sistema pronto para operações!'
+    )
+    try:
+        bot.send_message(CHAT_ID, msg)
+    except Exception as e:
+        print(f'[ERRO] Startup: {str(e)}')
 
 def scheduler_loop():
     schedule.every(30).minutes.do(send_trade_signal)
@@ -333,13 +476,20 @@ def scheduler_loop():
             time.sleep(5)
 
 if __name__ == '__main__':
-    print('🚀 Iniciando Bot...')
-    bot.send_message(CHAT_ID, '🟢 Bot Elite Pro Reiniciado e Ativo!')
+    print('🚀 Iniciando Bot Elite Pro v5.0...')
+    send_startup_message()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     
     while True:
         try:
-            bot.polling(non_stop=True, timeout=60)
+            print('📡 Ativando polling de mensagens...')
+            bot.polling(non_stop=True, timeout=60, long_polling_timeout=60)
         except Exception as e:
-            print(f'⚠️ Erro: {str(e)}')
-            time.sleep(10)
+            if '409' in str(e):
+                print('⚠️ Detectado conflito 409 - Reiniciando em 5s...')
+                time.sleep(5)
+                bot.remove_webhook()
+                time.sleep(1)
+            else:
+                print(f'⚠️ Erro: {str(e)}')
+                time.sleep(15)
