@@ -14,6 +14,12 @@ from datetime import datetime, timezone
 TOKEN   = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '-1003780528406')
 
+# Validação segura do token
+if not TOKEN:
+    print('[ERRO CRÍTICO] TELEGRAM_BOT_TOKEN não configurado!')
+    print('Configure a variável de ambiente TELEGRAM_BOT_TOKEN no Railway')
+    exit(1)
+
 bot = telebot.TeleBot(TOKEN, parse_mode='HTML')
 
 SYMBOL_TV   = 'BTCUSDT'
