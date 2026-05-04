@@ -14,13 +14,15 @@ from datetime import datetime, timezone
 TOKEN   = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '-1003780528406')
 
-# Validação segura do token
 if not TOKEN:
     print('[ERRO CRÍTICO] TELEGRAM_BOT_TOKEN não configurado!')
     print('Configure a variável de ambiente TELEGRAM_BOT_TOKEN no Railway')
     exit(1)
 
+# Configuração para evitar múltiplas instâncias
 bot = telebot.TeleBot(TOKEN, parse_mode='HTML')
+bot.remove_webhook()
+time.sleep(0.5)
 
 SYMBOL_TV   = 'BTCUSDT'
 CCXT_SYMBOL = 'BTC/USDT'
@@ -29,19 +31,20 @@ ultimo_sinal        = None
 ultimo_link_noticia = None
 sinal_lock          = threading.Lock()
 
-SABEDORIA = [
-    '📜 <i>O mercado pune a ganancia e recompensa a paciencia.</i>',
-    '📜 <i>O stop loss nao e fraqueza - e sobrevivencia.</i>',
-    '📜 <i>O mercado e um espelho da psicologia humana. Domine a si mesmo.</i>',
-    '📜 <i>A preservacao de capital e a primeira regra. Sem capital, nao ha jogo.</i>',
+CONSELHOS = [
+    '💡 <i><b>Paciência:</b> O mercado premia os que aguardam a confluência perfeita.</i>',
+    '🎯 <i><b>Foco:</b> Stop Loss não é fraqueza - é gestão profissional de risco.</i>',
+    '⚖️ <i><b>Equilíbrio:</b> A psicologia é 80% do sucesso nos mercados.</i>',
+    '💎 <i><b>Preservação:</b> Capital preservado é a primeira lei do trader.</i>',
+    '📊 <i><b>Análise:</b> Confluência em múltiplos timeframes = maior probabilidade.</i>',
 ]
 
-MOTIVACOES = [
-    '💎 <b>O mercado transfere dinheiro dos impacientes para os pacientes.</b>',
-    '🚀 <b>Traders amadores focam nos lucros. Profissionais focam em proteger o capital.</b>',
-    '🦅 <b>A disciplina e a ponte entre a meta e a realizacao.</b>',
-    '🔥 <b>Um dia ruim de trade nao define sua carreira. A consistencia, sim.</b>',
-    '👑 <b>O sucesso no mercado e 20% estrategia e 80% psicologia.</b>',
+RECOMENDACOES = [
+    '✅ Risco/Retorno mínimo: 1:2 | Máximo capital por trade: 2%',
+    '✅ Sempre use Stop Loss - nenhuma exceção',
+    '✅ Tome lucro parcial em TP1, deixe correr em TP2',
+    '✅ Não doble posição - respeite o plano',
+    '✅ Gerencie emoções - siga a estratégia mecanicamente',
 ]
 
 def get_multi_currency_prices(base_asset='BTC'):
@@ -56,7 +59,7 @@ def get_multi_currency_prices(base_asset='BTC'):
             'USDC': tickers[base_asset + '/USDC']['last'],
         }
     except Exception as e:
-        print('[ERRO] Cotacoes: ' + str(e))
+        print(f'[ERRO] Cotações: {str(e)}')
         return None
 
 def get_tradingview_analysis(symbol=SYMBOL_TV, interval=Interval.INTERVAL_1_HOUR):
@@ -73,9 +76,11 @@ def get_tradingview_analysis(symbol=SYMBOL_TV, interval=Interval.INTERVAL_1_HOUR
             'atr':          a.indicators.get('ATR', 0),
             'buy_signals':  a.summary.get('BUY', 0),
             'sell_signals': a.summary.get('SELL', 0),
+            'mfi':          a.indicators.get('MFI', 50),
+            'bb_position':  a.indicators.get('BB.lower', 0),
         }
     except Exception as e:
-        print('[ERRO] TradingView: ' + str(e))
+        print(f'[ERRO] TradingView: {str(e)}')
         return None
 
 def get_confluence_signal():
@@ -87,18 +92,18 @@ def get_confluence_signal():
     def direction(rec):
         if 'BUY'  in rec: return 'BUY'
         if 'SELL' in rec: return 'SELL'
-        return 'NEUTRAL'
+        return 'NEUTRO'
     
     dir1h = direction(tf1h['rec'])
     dir4h = direction(tf4h['rec'])
     tf1h['tf4h_rec'] = tf4h['rec']
     
-    if dir1h == dir4h and dir1h != 'NEUTRAL':
+    if dir1h == dir4h and dir1h != 'NEUTRO':
         tf1h['confluence'] = True
         return dir1h, tf1h
     
     tf1h['confluence'] = False
-    return (dir1h if dir1h != 'NEUTRAL' else None), tf1h
+    return (dir1h if dir1h != 'NEUTRO' else None), tf1h
 
 def generate_premium_chart(symbol=CCXT_SYMBOL, timeframe='1h', limit=120):
     try:
@@ -146,11 +151,11 @@ def generate_premium_chart(symbol=CCXT_SYMBOL, timeframe='1h', limit=120):
         
         fname = 'elite_chart_BTC.png'
         mpf.plot(df, type='candle', volume=True, style=s, addplot=apds,
-                title='Bitcoin Institucional - Algoritmo Elite (1H)',
+                title='📊 Bitcoin Profissional - Análise Técnica Elite',
                 savefig=fname, figsize=(14, 10), panel_ratios=(4, 1, 1.5, 1.5), tight_layout=True)
         return fname
     except Exception as e:
-        print('[ERRO] Grafico: ' + str(e))
+        print(f'[ERRO] Gráfico: {str(e)}')
         return None
 
 def send_trade_signal(force=False):
@@ -160,19 +165,19 @@ def send_trade_signal(force=False):
         prices = get_multi_currency_prices('BTC')
         
         if not tv_data or not prices or not direction:
-            print('[INFO] Sem sinal direcional.')
+            print('[INFO] Sem sinal direcional no momento.')
             return
         
         is_buy     = direction == 'BUY'
-        trade_type = 'COMPRA LONG' if is_buy else 'VENDA SHORT'
+        trade_type = 'COMPRA LONG 🟢' if is_buy else 'VENDA SHORT 🔴'
         
         if trade_type == ultimo_sinal and not force:
-            print('[INFO] Sinal repetido.')
+            print('[INFO] Sinal duplicado - ignorado.')
             return
         
         adx = tv_data['adx']
         if adx < 20 and not force:
-            print('[INFO] ADX baixo. Descartado.')
+            print(f'[INFO] ADX baixo ({adx:.1f}) - tendência fraca. Descartado.')
             return
         
         ultimo_sinal = trade_type
@@ -186,10 +191,10 @@ def send_trade_signal(force=False):
         tf4h_rec   = tv_data.get('tf4h_rec', 'N/D')
         buy_sig    = tv_data.get('buy_signals', 0)
         sell_sig   = tv_data.get('sell_signals', 0)
+        mfi        = tv_data.get('mfi', 50)
         
-        emoji       = '🟢' if is_buy else '🔴'
         chart_emoji = '📈' if is_buy else '📉'
-        conf_badge  = 'CONFLUENCIA 1H+4H OK' if confluence else 'Sinal 1H apenas'
+        conf_badge  = '✅ CONFLUÊNCIA 1H+4H' if confluence else '⚠️ Sinal 1H'
         
         mult_sl, mult_tp1, mult_tp2 = 1.5, 1.5, 3.0
         
@@ -202,57 +207,61 @@ def send_trade_signal(force=False):
             tp1_usd = price_usd - (atr * mult_tp1)
             tp2_usd = price_usd - (atr * mult_tp2)
         
-        rr_tp1 = abs(tp1_usd - price_usd) / abs(sl_usd - price_usd)
-        rr_tp2 = abs(tp2_usd - price_usd) / abs(sl_usd - price_usd)
-        r_tp1  = tp1_usd / price_usd
-        r_tp2  = tp2_usd / price_usd
-        r_sl   = sl_usd  / price_usd
+        rr_tp1 = abs(tp1_usd - price_usd) / abs(sl_usd - price_usd) if abs(sl_usd - price_usd) > 0 else 0
+        rr_tp2 = abs(tp2_usd - price_usd) / abs(sl_usd - price_usd) if abs(sl_usd - price_usd) > 0 else 0
         
-        adx_text = 'Forte' if adx > 25 else 'Moderado' if adx > 20 else 'Fraco'
-        rsi_text = 'Sobrecomprado' if rsi > 70 else 'Sobrevendido' if rsi < 30 else 'Neutro'
+        adx_text = '🔥 Forte' if adx > 25 else '⚡ Moderado' if adx > 20 else '⚠️ Fraco'
+        rsi_text = '🔴 Sobrecomprado' if rsi > 70 else '🟢 Sobrevendido' if rsi < 30 else '🟡 Neutro'
+        mfi_text = '🔴 Alto' if mfi > 80 else '🟢 Baixo' if mfi < 20 else '🟡 Moderado'
         now_str  = datetime.now(timezone.utc).strftime('%d/%m/%Y - %H:%M UTC')
         
         chart_file = generate_premium_chart()
         
         msg = (
-            chart_emoji + ' <b>ALERTA INSTITUCIONAL ELITE</b> ' + chart_emoji + '\n'
-            + '<code>================================</code>\n'
-            + 'Hora: <i>' + now_str + '</i>\n'
-            + 'Ativo: Bitcoin (BTC)\n'
-            + emoji + ' Operacao: <code>' + trade_type + '</code>\n'
-            + 'Analise: ' + conf_badge + '\n'
-            + '<code>================================</code>\n'
-            + 'ADX: ' + adx_text + ' (' + str(round(adx, 1)) + ')\n'
-            + 'RSI: ' + rsi_text + ' (' + str(round(rsi, 1)) + ')\n'
-            + 'Sinais 1H: ' + str(buy_sig) + ' compra / ' + str(sell_sig) + ' venda\n'
-            + '4H: <code>' + tf4h_rec + '</code>\n'
-            + '<code>================================</code>\n'
-            + 'ENTRADA:\n'
-            + '  USD:  <code>$' + '{:,.2f}'.format(price_usd)  + '</code>\n'
-            + '  EUR:  <code>E' + '{:,.2f}'.format(price_eur)  + '</code>\n'
-            + '  USDC: <code>'  + '{:,.2f}'.format(price_usdc) + '</code>\n'
-            + '<code>================================</code>\n'
-            + 'TP1 - R:R ' + str(round(rr_tp1, 1)) + ':1\n'
-            + '  USD: <code>$' + '{:,.2f}'.format(tp1_usd) + '</code>\n'
-            + 'TP2 - R:R ' + str(round(rr_tp2, 1)) + ':1\n'
-            + '  USD: <code>$' + '{:,.2f}'.format(tp2_usd) + '</code>\n'
-            + 'STOP LOSS:\n'
-            + '  USD: <code>$' + '{:,.2f}'.format(sl_usd) + '</code>\n'
-            + '<code>================================</code>\n'
-            + 'Risco: max 1-2% do capital\n'
-            + 'ATR: <code>$' + '{:,.2f}'.format(atr) + '</code>\n\n'
-            + random.choice(SABEDORIA)
+            f'{chart_emoji} <b>⚡ OPORTUNIDADE IDENTIFICADA</b> {chart_emoji}\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + f'⏰ <b>Horário:</b> <i>{now_str}</i>\n'
+            + f'📍 <b>Ativo:</b> Bitcoin (BTC/USDT)\n'
+            + f'<b>🎯 Operação:</b> <code>{trade_type}</code>\n'
+            + f'<b>📊 Status:</b> {conf_badge}\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + f'<b>📈 INDICADORES TÉCNICOS:</b>\n'
+            + f'  • ADX: {adx_text} ({adx:.1f})\n'
+            + f'  • RSI: {rsi_text} ({rsi:.1f})\n'
+            + f'  • MFI: {mfi_text} ({mfi:.1f})\n'
+            + f'  • Sinais 1H: {buy_sig}📈 / {sell_sig}📉\n'
+            + f'  • 4H Recomendação: <code>{tf4h_rec}</code>\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + '<b>💰 PREÇOS DE ENTRADA:</b>\n'
+            + f'  USD:  <code>${price_usd:,.2f}</code>\n'
+            + f'  EUR:  <code>€{price_eur:,.2f}</code>\n'
+            + f'  USDC: <code>{price_usdc:,.2f}</code>\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + '<b>🎯 NÍVEIS DE ALVO:</b>\n'
+            + f'  TP1 (R:R {rr_tp1:.1f}:1)  ▶️  ${tp1_usd:,.2f}\n'
+            + f'  TP2 (R:R {rr_tp2:.1f}:1)  ▶️  ${tp2_usd:,.2f}\n'
+            + '<b>🛑 STOP LOSS:</b>\n'
+            + f'  ${sl_usd:,.2f}\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + f'<b>📊 ATR (Volatilidade):</b> ${atr:,.2f}\n'
+            + f'<b>⚠️ Risco Recomendado:</b> Máx 2% do capital\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + '<b>💡 RECOMENDAÇÕES:</b>\n'
+            + f'{random.choice(RECOMENDACOES)}\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + f'{random.choice(CONSELHOS)}'
         )
         
         try:
             if chart_file and os.path.exists(chart_file):
                 with open(chart_file, 'rb') as photo:
                     bot.send_photo(CHAT_ID, photo, caption=msg)
+                print(f'✅ SINAL ENVIADO: {trade_type}')
             else:
                 bot.send_message(CHAT_ID, msg)
-            print('[OK] Sinal: ' + trade_type)
+                print(f'✅ SINAL ENVIADO (sem gráfico): {trade_type}')
         except Exception as e:
-            print('[ERRO] Envio: ' + str(e))
+            print(f'[ERRO] Envio de mensagem: {str(e)}')
         finally:
             if chart_file and os.path.exists(chart_file):
                 os.remove(chart_file)
@@ -264,39 +273,47 @@ def send_crypto_news():
         for entry in feed.entries[:5]:
             if entry.link != ultimo_link_noticia:
                 ultimo_link_noticia = entry.link
-                summary = getattr(entry, 'summary', '')[:220]
+                summary = getattr(entry, 'summary', '')[:250]
                 msg = (
-                    '🌍 <b>RADAR DO MERCADO - ELITE NEWS</b>\n'
-                    + '<code>================================</code>\n'
-                    + '<b>' + entry.title + '</b>\n\n'
-                    + '<i>' + summary + '…</i>\n\n'
-                    + '<a href="' + entry.link + '">Ler materia completa</a>\n'
-                    + '<code>================================</code>\n'
-                    + random.choice(MOTIVACOES)
+                    '🌍 <b>NOTÍCIAS DO MERCADO CRIPTO</b>\n'
+                    + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+                    + f'<b>📰 {entry.title}</b>\n\n'
+                    + f'<i>{summary}…</i>\n\n'
+                    + f'<a href="{entry.link}">🔗 Ler matéria completa</a>\n'
+                    + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>'
                 )
                 bot.send_message(CHAT_ID, msg, disable_web_page_preview=False)
                 break
     except Exception as e:
-        print('[ERRO] Noticias: ' + str(e))
+        print(f'[ERRO] Notícias: {str(e)}')
 
 @bot.message_handler(commands=['start', 'ajuda'])
 def cmd_start(msg):
-    bot.send_message(msg.chat.id,
-        '<b>Bot Elite - Comandos:</b>\n\n'
-        + '/btc    - Analise imediata\n'
-        + '/news   - Ultima noticia\n'
-        + '/status - Status do sistema\n'
-        + '/ajuda  - Este menu'
+    help_text = (
+        '<b>🤖 BOT ELITE - ANÁLISE PROFISSIONAL DE MERCADO</b>\n\n'
+        '<b>📋 COMANDOS DISPONÍVEIS:</b>\n'
+        '━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+        '<b>/análise</b> - Gera análise imediata do Bitcoin\n'
+        '<b>/notícias</b> - Últimas notícias do mercado cripto\n'
+        '<b>/status</b> - Status do sistema e dados em tempo real\n'
+        '<b>/ajuda</b> - Exibe este menu\n'
+        '━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+        '<b>ℹ️ INFORMAÇÕES:</b>\n'
+        '• Análises a cada 30 minutos\n'
+        '• Sinais instantâneos quando oportunidade é identificada\n'
+        '• Multi-timeframe (1H + 4H)\n'
+        '• Indicadores: ADX, RSI, MACD, ATR, MFI\n'
     )
+    bot.send_message(msg.chat.id, help_text)
 
-@bot.message_handler(commands=['btc'])
+@bot.message_handler(commands=['análise', 'analise'])
 def cmd_btc(msg):
-    bot.send_message(msg.chat.id, 'Gerando analise, aguarde…')
+    bot.send_message(msg.chat.id, '⏳ Gerando análise profissional... aguarde…')
     threading.Thread(target=send_trade_signal, kwargs={'force': True}, daemon=True).start()
 
-@bot.message_handler(commands=['news'])
+@bot.message_handler(commands=['notícias', 'noticias'])
 def cmd_news(msg):
-    bot.send_message(msg.chat.id, 'Buscando noticia…')
+    bot.send_message(msg.chat.id, '🔍 Buscando últimas notícias do mercado…')
     threading.Thread(target=send_crypto_news, daemon=True).start()
 
 @bot.message_handler(commands=['status'])
@@ -306,58 +323,79 @@ def cmd_status(msg):
     now    = datetime.now(timezone.utc).strftime('%d/%m/%Y - %H:%M UTC')
     if prices and tv:
         status = (
-            'SISTEMA ONLINE - ' + now + '\n'
-            + '<code>================================</code>\n'
-            + 'BTC/USD:  <code>$' + '{:,.2f}'.format(prices['USD'])  + '</code>\n'
-            + 'BTC/EUR:  <code>E' + '{:,.2f}'.format(prices['EUR'])  + '</code>\n'
-            + 'BTC/USDC: <code>'  + '{:,.2f}'.format(prices['USDC']) + '</code>\n'
-            + '<code>================================</code>\n'
-            + 'RSI: <code>' + str(round(tv['rsi'], 1)) + '</code>\n'
-            + 'ADX: <code>' + str(round(tv['adx'], 1)) + '</code>\n'
-            + 'Resumo: <code>' + tv['rec'] + '</code>'
+            '✅ <b>SISTEMA ONLINE</b>\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + f'⏰ {now}\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + '<b>💰 COTAÇÃO BITCOIN:</b>\n'
+            + f'  USD:  <code>${prices["USD"]:,.2f}</code>\n'
+            + f'  EUR:  <code>€{prices["EUR"]:,.2f}</code>\n'
+            + f'  USDC: <code>{prices["USDC"]:,.2f}</code>\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + '<b>📊 INDICADORES 1H:</b>\n'
+            + f'  RSI:  <code>{tv["rsi"]:.1f}</code>\n'
+            + f'  ADX:  <code>{tv["adx"]:.1f}</code>\n'
+            + f'  Recomendação: <code>{tv["rec"]}</code>\n'
+            + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+            + '🟢 Todos os sistemas operacionais normalmente!'
         )
     else:
-        status = 'Erro ao obter dados.'
+        status = '❌ Erro ao obter dados. Tente novamente em instantes.'
     bot.send_message(msg.chat.id, status)
 
 def send_startup_message():
     now = datetime.now(timezone.utc).strftime('%d/%m/%Y - %H:%M UTC')
     msg = (
-        '🟢 <b>SISTEMA ELITE v2.0 - ONLINE</b>\n'
-        + '<code>================================</code>\n'
-        + 'Hora: ' + now + '\n'
-        + 'Conexao Telegram:      OK\n'
-        + 'Motor TradingView:     ATIVO\n'
-        + 'Multi-Timeframe 1H+4H: ATIVO\n'
-        + 'Cotacoes USD/EUR/USDC: ATIVAS\n'
-        + 'Filtro ADX >= 20:      ATIVO\n'
-        + '<code>================================</code>\n'
-        + 'Scanner: 30 min | Noticias: 2h\n'
-        + 'Comandos: /btc /news /status /ajuda\n'
-        + '<code>================================</code>\n'
-        + random.choice(SABEDORIA)
+        '🟢 <b>SISTEMA ELITE v3.0 - INICIALIZADO</b>\n'
+        + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+        + f'⏰ {now}\n'
+        + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+        + '✅ Conexão Telegram: OK\n'
+        + '✅ Motor TradingView: ATIVO\n'
+        + '✅ Análise Multi-Timeframe 1H+4H: ATIVO\n'
+        + '✅ Cotações USD/EUR/USDC: ATIVAS\n'
+        + '✅ Filtro ADX >= 20: ATIVO\n'
+        + '✅ Detecção de Confluência: ATIVA\n'
+        + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+        + '📊 Frequência de Análise: A cada 30 minutos\n'
+        + '📰 Notícias: A cada 2 horas\n'
+        + '⚡ Sinais: INSTANTÂNEOS quando oportunidade detectada\n'
+        + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+        + 'Comandos: /análise /notícias /status /ajuda\n'
+        + '<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n'
+        + f'{random.choice(CONSELHOS)}'
     )
     try:
         bot.send_message(CHAT_ID, msg)
     except Exception as e:
-        print('[ERRO] Startup: ' + str(e))
+        print(f'[ERRO] Startup: {str(e)}')
 
 def scheduler_loop():
     schedule.every(30).minutes.do(send_trade_signal)
     schedule.every(2).hours.do(send_crypto_news)
     while True:
-        schedule.run_pending()
-        time.sleep(1)
+        try:
+            schedule.run_pending()
+            time.sleep(1)
+        except Exception as e:
+            print(f'[ERRO] Scheduler: {str(e)}')
+            time.sleep(5)
 
 if __name__ == '__main__':
-    print('Iniciando Bot Elite v2.0…')
-    bot.remove_webhook()
-    time.sleep(2)
+    print('🚀 Iniciando Bot Elite v3.0...')
     send_startup_message()
     threading.Thread(target=scheduler_loop, daemon=True).start()
+    
     while True:
         try:
-            bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
+            print('📡 Ativando polling de mensagens...')
+            bot.polling(non_stop=True, timeout=60, long_polling_timeout=60)
         except Exception as e:
-            print('[AVISO] ' + str(e))
-            time.sleep(15)
+            if '409' in str(e):
+                print('⚠️ Detectado conflito 409 - Reiniciando conexão em 5 segundos...')
+                time.sleep(5)
+                bot.remove_webhook()
+                time.sleep(1)
+            else:
+                print(f'⚠️ Erro no polling: {str(e)}')
+                time.sleep(15)
