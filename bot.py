@@ -10,6 +10,7 @@ import threading
 import random
 import os
 from datetime import datetime, timezone
+import hashlib
 
 TOKEN   = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '-1003780528406')
@@ -26,10 +27,15 @@ time.sleep(0.5)
 SYMBOL_TV   = 'BTCUSDT'
 CCXT_SYMBOL = 'BTC/USDT'
 
-ultimo_sinal        = None
-ultimo_link_noticia = None
-sinal_lock          = threading.Lock()
-mensagens_enviadas  = set()
+# ═══════════════════════════════════════════════════════════
+# CACHE INTELIGENTE DE SINAIS
+# ═══════════════════════════════════════════════════════════
+ultimo_sinal_enviado    = None
+ultimo_hash_sinal       = None
+tempo_ultimo_sinal      = 0
+INTERVALO_MINIMO_SINAL  = 600  # 10 minutos entre sinais
+ultimo_link_noticia     = None
+sinal_lock              = threading.Lock()
 
 # ═══════════════════════════════════════════════════════════
 # CONSELHOS E RECOMENDAÇÕES PROFISSIONAIS
@@ -61,6 +67,11 @@ ALERTAS_RISCO = [
     '⚠️ <i>Sempre respeite STOPS - mercado não perdoa ganância</i>',
     '⚠️ <i>Volatilidade alta - aumente cautela e reduza tamanho da posição</i>',
 ]
+
+def gerar_hash_sinal(direction, price_usd, adx, rsi):
+    """Gera hash único para identificar sinais idênticos"""
+    sinal_str = f"{direction}_{price_usd:.2f}_{adx:.0f}_{rsi:.0f}"
+    return hashlib.md5(sinal_str.encode()).hexdigest()
 
 def get_multi_currency_prices(base_asset='BTC'):
     exchange = ccxt.binance()
@@ -117,11 +128,9 @@ def get_confluence_signal():
     
     if dir1h == dir4h and dir1h != 'NEUTRO':
         tf1h['confluence'] = True
-        tf1h['force'] = 1.5
         return dir1h, tf1h
     
     tf1h['confluence'] = False
-    tf1h['force'] = 1.0
     return (dir1h if dir1h != 'NEUTRO' else None), tf1h
 
 def generate_premium_chart(symbol=CCXT_SYMBOL, timeframe='1h', limit=120):
@@ -179,13 +188,12 @@ def generate_premium_chart(symbol=CCXT_SYMBOL, timeframe='1h', limit=120):
         print(f'[ERRO] Gráfico: {str(e)}')
         return None
 
-def generate_signal_hash(direction, price, adx):
-    """Gera hash único para evitar duplicatas"""
-    return f"{direction}_{price:.0f}_{adx:.0f}"
-
 def send_trade_signal(force=False):
-    global ultimo_sinal
+    global ultimo_sinal_enviado, ultimo_hash_sinal, tempo_ultimo_sinal
+    
     with sinal_lock:
+        tempo_agora = time.time()
+        
         direction, tv_data = get_confluence_signal()
         prices = get_multi_currency_prices('BTC')
         
@@ -196,22 +204,33 @@ def send_trade_signal(force=False):
         is_buy     = direction == 'BUY'
         trade_type = 'COMPRA LONG 🟢' if is_buy else 'VENDA SHORT 🔴'
         
-        # Verificação melhorada de duplicatas
-        signal_hash = generate_signal_hash(direction, prices['USD'], tv_data['adx'])
-        if signal_hash in mensagens_enviadas and not force:
-            print('[INFO] Sinal duplicado - ignorado.')
+        adx = tv_data['adx']
+        rsi = tv_data['rsi']
+        
+        # Gerar hash do sinal
+        novo_hash = gerar_hash_sinal(direction, prices['USD'], adx, rsi)
+        
+        # Verificar se é sinal duplicado
+        if novo_hash == ultimo_hash_sinal and not force:
+            print('[INFO] Sinal identico ao anterior - BLOQUEADO para evitar duplicata.')
             return
         
-        adx = tv_data['adx']
+        # Verificar intervalo mínimo entre sinais (10 minutos)
+        if not force and (tempo_agora - tempo_ultimo_sinal) < INTERVALO_MINIMO_SINAL:
+            minutos_restantes = (INTERVALO_MINIMO_SINAL - (tempo_agora - tempo_ultimo_sinal)) / 60
+            print(f'[INFO] Intervalo mínimo não atingido. Aguarde {minutos_restantes:.0f} minutos.')
+            return
+        
+        # Filtro ADX
         if adx < 20 and not force:
             print(f'[INFO] ADX baixo ({adx:.1f}) - tendência fraca. Descartado.')
             return
         
-        mensagens_enviadas.add(signal_hash)
-        if len(mensagens_enviadas) > 50:
-            mensagens_enviadas.pop()
+        # Atualizar cache
+        ultimo_sinal_enviado = trade_type
+        ultimo_hash_sinal = novo_hash
+        tempo_ultimo_sinal = tempo_agora
         
-        rsi        = tv_data['rsi']
         price_usd  = prices['USD']
         price_eur  = prices['EUR']
         price_usdc = prices['USDC']
@@ -247,6 +266,7 @@ def send_trade_signal(force=False):
         stoch_text = '🔴 Alto' if stoch > 80 else '🟢 Baixo' if stoch < 20 else '🟡 Normal'
         now_str  = datetime.now(timezone.utc).strftime('%d/%m/%Y - %H:%M UTC')
         
+        # Gerar gráfico ANTES de enviar mensagem
         chart_file = generate_premium_chart()
         
         msg = (
@@ -299,9 +319,12 @@ def send_trade_signal(force=False):
                 print(f'✅ SINAL ENVIADO COM GRÁFICO: {trade_type}')
             else:
                 bot.send_message(CHAT_ID, msg)
-                print(f'✅ SINAL ENVIADO: {trade_type}')
+                print(f'✅ SINAL ENVIADO (sem gráfico): {trade_type}')
         except Exception as e:
             print(f'[ERRO] Envio: {str(e)}')
+            # Resetar cache em caso de erro
+            ultimo_hash_sinal = None
+            tempo_ultimo_sinal = 0
         finally:
             if chart_file and os.path.exists(chart_file):
                 os.remove(chart_file)
@@ -349,6 +372,7 @@ def cmd_start(msg):
         '✅ Cotações em 4 moedas: USD, EUR, USDC, BRL\n'
         '✅ Cálculos automáticos de TP e SL com ATR\n'
         '✅ Taxa R:R otimizada (até 3:1 em TP2)\n'
+        '✅ PROTEÇÃO contra mensagens duplicadas\n'
         '<code>═══════════════════════════════════</code>\n'
         '⚠️ IMPORTANTE: Sinais são educacionais. Trade por sua conta e risco!\n'
     )
@@ -356,12 +380,12 @@ def cmd_start(msg):
 
 @bot.message_handler(commands=['análise', 'analise'])
 def cmd_btc(msg):
-    bot.send_message(msg.chat.id, '⏳ <b>Gerando análise profissional avançada...</b>\n⏱️ Aguarde aproximadamente 5 segundos…')
+    bot.send_message(msg.chat.id, '⏳ <b>Analisando mercado profundamente...</b>\n⏱️ Aguarde…')
     threading.Thread(target=send_trade_signal, kwargs={'force': True}, daemon=True).start()
 
 @bot.message_handler(commands=['notícias', 'noticias'])
 def cmd_news(msg):
-    bot.send_message(msg.chat.id, '🔍 <b>Buscando últimas notícias do mercado cripto...</b>')
+    bot.send_message(msg.chat.id, '🔍 <b>Buscando últimas notícias...</b>')
     threading.Thread(target=send_crypto_news, daemon=True).start()
 
 @bot.message_handler(commands=['status'])
@@ -394,6 +418,7 @@ def cmd_status(msg):
             + '  ✅ TradingView: Conectada\n'
             + '  ✅ Análise Automática: ATIVA\n'
             + '  ✅ Detecção de Sinais: ATIVA\n'
+            + '  ✅ Proteção Anti-Duplicata: ATIVA\n'
             + '<code>═══════════════════════════════════</code>'
         )
     else:
@@ -403,13 +428,13 @@ def cmd_status(msg):
 def send_startup_message():
     now = datetime.now(timezone.utc).strftime('%d/%m/%Y - %H:%M UTC')
     msg = (
-        '🟢 <b>SISTEMA ELITE PRO v4.0 - INICIALIZADO</b>\n'
+        '🟢 <b>SISTEMA ELITE PRO v5.0 - INICIALIZADO</b>\n'
         + '<code>═══════════════════════════════════</code>\n'
         + f'⏰ {now}\n'
         + '<code>═══════════════════════════════════</code>\n'
         + '<b>🔧 MÓDULOS ATIVADOS:</b>\n'
-        + '  ✅ Conexão Telegram\n'
-        + '  ✅ API Binance (Cotações)\n'
+        + '  ✅ Conexão Telegram (SSL seguro)\n'
+        + '  ✅ API Binance (Cotações em tempo real)\n'
         + '  ✅ Motor TradingView (Análise Técnica)\n'
         + '  ✅ Análise Multi-Timeframe 1H+4H\n'
         + '  ✅ Detecção de Confluência\n'
@@ -417,11 +442,13 @@ def send_startup_message():
         + '  ✅ 7 Indicadores Técnicos\n'
         + '  ✅ Gerador de Gráficos Profissionais\n'
         + '  ✅ Feed de Notícias RSS\n'
+        + '  ✅ PROTEÇÃO Anti-Duplicata INTELIGENTE\n'
         + '<code>═══════════════════════════════════</code>\n'
-        + '<b>📊 CONFIGURAÇÃO DE ANÁLISE:</b>\n'
-        + '  • Frequência: A cada 30 minutos\n'
-        + '  • Notícias: A cada 2 horas\n'
-        + '  • Sinais: INSTANTÂNEOS quando detectados\n'
+        + '<b>📊 CONFIGURAÇÃO OTIMIZADA:</b>\n'
+        + '  • Análises: a cada 30 minutos\n'
+        + '  • Notícias: a cada 2 horas\n'
+        + '  • Sinais: INSTANTÂNEOS (sem duplicatas)\n'
+        + '  • Intervalo mínimo entre sinais: 10 minutos\n'
         + '  • Multi-timeframe: 1H + 4H com confluência\n'
         + '  • Cotações em: USD, EUR, USDC, BRL\n'
         + '<code>═══════════════════════════════════</code>\n'
@@ -449,7 +476,7 @@ def scheduler_loop():
             time.sleep(5)
 
 if __name__ == '__main__':
-    print('🚀 Iniciando Bot Elite Pro v4.0...')
+    print('🚀 Iniciando Bot Elite Pro v5.0...')
     send_startup_message()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     
