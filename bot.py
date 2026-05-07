@@ -11,18 +11,31 @@ import random
 import os
 from datetime import datetime, timezone
 import hashlib
+from flask import Flask, request
+import logging
 
 TOKEN   = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '-1003780528406')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+PORT = int(os.getenv('PORT', 8000))
 
 if not TOKEN:
     print('[ERRO CRÍTICO] TELEGRAM_BOT_TOKEN não configurado!')
     print('Configure a variável de ambiente TELEGRAM_BOT_TOKEN no Railway')
     exit(1)
 
+if not WEBHOOK_URL:
+    print('[ERRO CRÍTICO] WEBHOOK_URL não configurado!')
+    print('Configure a variável de ambiente WEBHOOK_URL no Railway')
+    print('Exemplo: https://seu-app.up.railway.app/webhook')
+    exit(1)
+
 bot = telebot.TeleBot(TOKEN, parse_mode='HTML')
-bot.remove_webhook()
-time.sleep(0.5)
+app = Flask(__name__)
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 SYMBOL_TV   = 'BTCUSDT'
 CCXT_SYMBOL = 'BTC/USDT'
@@ -477,12 +490,12 @@ def cmd_status(msg):
 def send_startup_message():
     now = datetime.now(timezone.utc).strftime('%d/%m/%Y - %H:%M UTC')
     msg = (
-        '🟢 <b>SISTEMA ELITE PRO v5.0 - INICIALIZADO</b>\n'
+        '🟢 <b>SISTEMA ELITE PRO v5.0 - INICIALIZADO (WEBHOOK MODE)</b>\n'
         + '<code>═══════════════════════════════════</code>\n'
         + f'⏰ {now}\n'
         + '<code>═══════════════════════════════════</code>\n'
         + '<b>🔧 MÓDULOS ATIVADOS:</b>\n'
-        + '  ✅ Conexão Telegram (SSL seguro)\n'
+        + '  ✅ Conexão Telegram (Webhook - SSL seguro)\n'
         + '  ✅ API Binance (Cotações em tempo real)\n'
         + '  ✅ Motor TradingView (Análise Técnica)\n'
         + '  ✅ Análise Multi-Timeframe 1H+4H\n'
@@ -524,21 +537,53 @@ def scheduler_loop():
             print(f'[ERRO] Scheduler: {str(e)}')
             time.sleep(5)
 
-if __name__ == '__main__':
-    print('🚀 Iniciando Bot Elite Pro v5.0...')
-    send_startup_message()
-    threading.Thread(target=scheduler_loop, daemon=True).start()
+# ═══════════════════════════════════════════════════════════
+# WEBHOOK ENDPOINTS
+# ═══════════════════════════════════════════════════════════
 
-    while True:
-        try:
-            print('📡 Ativando polling de mensagens...')
-            bot.polling(non_stop=True, timeout=60, long_polling_timeout=60)
-        except Exception as e:
-            if '409' in str(e):
-                print('⚠️ Detectado conflito 409 - Reiniciando em 5s...')
-                time.sleep(5)
-                bot.remove_webhook()
-                time.sleep(1)
-            else:
-                print(f'⚠️ Erro: {str(e)}')
-                time.sleep(15)
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Recebe updates do Telegram via webhook"""
+    try:
+        json_data = request.get_json()
+        update = telebot.types.Update.de_json(json_data)
+        bot.process_new_updates([update])
+        logger.info(f"Update recebido: {update.update_id}")
+        return 'OK', 200
+    except Exception as e:
+        logger.error(f'[ERRO] Webhook: {str(e)}')
+        return 'ERROR', 400
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check para Railway"""
+    return 'OK', 200
+
+if __name__ == '__main__':
+    print('🚀 Iniciando Bot Elite Pro v5.0 (WEBHOOK MODE)...')
+    
+    # Remover webhook antigo
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except:
+        pass
+    
+    # Configurar novo webhook
+    try:
+        bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
+        print(f'✅ Webhook configurado: {WEBHOOK_URL}')
+    except Exception as e:
+        print(f'[ERRO] Ao configurar webhook: {str(e)}')
+        exit(1)
+    
+    # Enviar mensagem de startup
+    send_startup_message()
+    
+    # Iniciar scheduler em thread separada
+    threading.Thread(target=scheduler_loop, daemon=True).start()
+    print('✅ Scheduler iniciado')
+    
+    # Iniciar servidor Flask
+    print(f'📡 Servidor Flask iniciando na porta {PORT}...')
+    app.run(host='0.0.0.0', port=PORT, debug=False)
